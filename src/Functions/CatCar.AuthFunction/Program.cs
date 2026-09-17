@@ -1,14 +1,16 @@
 using CatCar.AuthFunction;
+using Microsoft.Azure.Functions.Worker.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
-var host = new HostBuilder()
-    .ConfigureFunctionsWorkerDefaults()
-    .ConfigureServices((context, services) =>
-    {
-        services.Configure<CustomerJwtOptions>(context.Configuration.GetSection(CustomerJwtOptions.SectionName));
-        services.AddSingleton<CustomerTokenIssuer>();
-    })
-    .Build();
+var builder = FunctionsApplication.CreateBuilder(args);
+
+builder.ConfigureFunctionsWebApplication();
+builder.AddServiceDefaults();
+
+builder.Services.Configure<CustomerJwtOptions>(builder.Configuration.GetSection(CustomerJwtOptions.SectionName));
+builder.Services.AddSingleton<CustomerTokenIssuer>();
+
+var host = builder.Build();
 
 host.Run();
