@@ -3,7 +3,6 @@ namespace CatCar.AuthFunction;
 using System.IdentityModel.Tokens.Jwt;
 using System.Net;
 using System.Security.Claims;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Web;
@@ -12,7 +11,9 @@ using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 
-public sealed class AuthenticateCustomerFunction(CustomerTokenIssuer tokenIssuer)
+public sealed class AuthenticateCustomerFunction(
+    CustomerTokenIssuer tokenIssuer,
+    ICustomerLookupService customerLookupService)
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
 
@@ -51,18 +52,10 @@ public sealed class AuthenticateCustomerFunction(CustomerTokenIssuer tokenIssuer
                     return await CreateInvalidDocumentResponseAsync(request, cancellationToken).ConfigureAwait(false);
                 }
 
-                var queryIssuedToken = tokenIssuer.Issue(queryDoc);
-                var queryResponse = request.CreateResponse(HttpStatusCode.OK);
-                AddCorsHeaders(queryResponse);
-                queryResponse.Headers.Add("Content-Type", "application/json; charset=utf-8");
-
-                await JsonSerializer.SerializeAsync(
-                    queryResponse.Body,
-                    new CustomerAuthenticationResponse(queryIssuedToken.Token, queryIssuedToken.ExpiresInSeconds, "Bearer"),
-                    SerializerOptions,
+                return await CreateAuthenticationResponseAsync(
+                    request,
+                    NormalizeDocumentNumber(queryDoc),
                     cancellationToken).ConfigureAwait(false);
-
-                return queryResponse;
             }
 
             // Return interactive HTML documentation & test page for browser navigation
@@ -92,7 +85,39 @@ public sealed class AuthenticateCustomerFunction(CustomerTokenIssuer tokenIssuer
             return await CreateInvalidDocumentResponseAsync(request, cancellationToken).ConfigureAwait(false);
         }
 
-        var issuedToken = tokenIssuer.Issue(authenticationRequest.DocumentNumber);
+        return await CreateAuthenticationResponseAsync(
+            request,
+            NormalizeDocumentNumber(authenticationRequest.DocumentNumber),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<HttpResponseData> CreateAuthenticationResponseAsync(
+        HttpRequestData request,
+        string documentNumber,
+        CancellationToken cancellationToken)
+    {
+        var customer = await customerLookupService.FindByDocumentNumberAsync(documentNumber, cancellationToken).ConfigureAwait(false);
+        if (customer is null)
+        {
+            return await CreateProblemResponseAsync(
+                request,
+                HttpStatusCode.NotFound,
+                "Customer not found",
+                "No customer was found for the provided document number.",
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        if (!customer.IsActive)
+        {
+            return await CreateProblemResponseAsync(
+                request,
+                HttpStatusCode.Forbidden,
+                "Customer is inactive",
+                "The customer associated with the provided document number is inactive.",
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        var issuedToken = tokenIssuer.Issue(customer.Id, documentNumber);
         var response = request.CreateResponse(HttpStatusCode.OK);
         AddCorsHeaders(response);
         response.Headers.Add("Content-Type", "application/json; charset=utf-8");
@@ -113,11 +138,24 @@ public sealed class AuthenticateCustomerFunction(CustomerTokenIssuer tokenIssuer
         response.Headers.Add("Access-Control-Allow-Headers", "Content-Type, Authorization");
     }
 
-    private static async Task<HttpResponseData> CreateInvalidDocumentResponseAsync(
+    private static Task<HttpResponseData> CreateInvalidDocumentResponseAsync(
         HttpRequestData request,
+        CancellationToken cancellationToken) =>
+        CreateProblemResponseAsync(
+            request,
+            HttpStatusCode.BadRequest,
+            "Invalid document number",
+            "documentNumber must be a valid CPF or CNPJ.",
+            cancellationToken);
+
+    private static async Task<HttpResponseData> CreateProblemResponseAsync(
+        HttpRequestData request,
+        HttpStatusCode statusCode,
+        string title,
+        string detail,
         CancellationToken cancellationToken)
     {
-        var response = request.CreateResponse(HttpStatusCode.BadRequest);
+        var response = request.CreateResponse(statusCode);
         AddCorsHeaders(response);
         response.Headers.Add("Content-Type", "application/problem+json; charset=utf-8");
 
@@ -125,15 +163,18 @@ public sealed class AuthenticateCustomerFunction(CustomerTokenIssuer tokenIssuer
             response.Body,
             new ProblemDetailsResponse(
                 "https://www.rfc-editor.org/rfc/rfc7807#section-3.1",
-                "Invalid document number",
-                (int)HttpStatusCode.BadRequest,
-                "documentNumber must be a valid CPF or CNPJ.",
+                title,
+                (int)statusCode,
+                detail,
                 request.Url.AbsolutePath),
             SerializerOptions,
             cancellationToken).ConfigureAwait(false);
 
         return response;
     }
+
+    private static string NormalizeDocumentNumber(string documentNumber) =>
+        string.Concat(documentNumber.Where(char.IsDigit));
 
     private static string GetInteractiveHtmlPage() =>
         """
@@ -399,9 +440,8 @@ public sealed class CustomerTokenIssuer(IOptions<CustomerJwtOptions> options)
 {
     private readonly CustomerJwtOptions _options = options.Value;
 
-    public IssuedCustomerToken Issue(string documentNumber)
+    public IssuedCustomerToken Issue(Guid customerId, string documentNumber)
     {
-        var customerId = GenerateDeterministicCustomerId(documentNumber);
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_options.SigningKey));
         var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
         var expirationMinutes = _options.ExpirationMinutes > 0 ? _options.ExpirationMinutes : 60;
@@ -428,14 +468,6 @@ public sealed class CustomerTokenIssuer(IOptions<CustomerJwtOptions> options)
             (int)TimeSpan.FromMinutes(expirationMinutes).TotalSeconds,
             customerId);
     }
-
-    private static Guid GenerateDeterministicCustomerId(string documentNumber)
-    {
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes($"catcar:customer:{documentNumber}"));
-        Span<byte> guidBytes = stackalloc byte[16];
-        hash.AsSpan(0, 16).CopyTo(guidBytes);
-        return new Guid(guidBytes);
-    }
 }
 
 public sealed class CustomerJwtOptions
@@ -443,8 +475,8 @@ public sealed class CustomerJwtOptions
     public const string SectionName = "CustomerJwt";
 
     public string SigningKey { get; set; } = string.Empty;
-    public string Issuer { get; set; } = "CatCarAuthServer";
-    public string Audience { get; set; } = "CatCarApi";
+    public string Issuer { get; set; } = "CatCar";
+    public string Audience { get; set; } = "CatCar.Api";
     public int ExpirationMinutes { get; set; } = 60;
 }
 

@@ -11,6 +11,7 @@
                       OutputItemType="Analyzer"
                       PrivateAssets="all" />
     <PackageReference Include="System.IdentityModel.Tokens.Jwt" />
+    <PackageReference Include="Npgsql" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\Host\CatCar.ServiceDefaults\CatCar.ServiceDefaults.csproj" />
