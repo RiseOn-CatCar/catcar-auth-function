@@ -13,8 +13,9 @@ builder.AddServiceDefaults();
 builder.Services.Configure<CustomerJwtOptions>(builder.Configuration.GetSection(CustomerJwtOptions.SectionName));
 builder.Services.AddSingleton<CustomerTokenIssuer>();
 
-var connectionString = builder.Configuration.GetConnectionString("catcar")
-    ?? throw new InvalidOperationException("Connection string 'catcar' is required.");
+var connectionString = builder.Configuration.GetConnectionString("catcar-auth")
+    ?? builder.Configuration.GetConnectionString("catcar")
+    ?? throw new InvalidOperationException("Connection string 'catcar-auth' or 'catcar' is required.");
 
 builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(connectionString));
 builder.Services.AddScoped<ICustomerLookupService, CustomerLookupService>();

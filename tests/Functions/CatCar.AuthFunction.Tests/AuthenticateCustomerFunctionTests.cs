@@ -100,10 +100,35 @@ public sealed class AuthenticateCustomerFunctionTests
         principal.FindFirst("role")?.Value.Should().Be("Customer");
     }
 
+    [Fact]
+    public async Task Run_GetWithDocumentNumber_ReturnsDocumentationWithoutIssuingToken()
+    {
+        var customerLookup = Substitute.For<ICustomerLookupService>();
+        var function = CreateFunction(customerLookup);
+
+        var response = await function.Run(CreateGetRequest($"?documentNumber={ValidCpf}"), CancellationToken.None);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        response.Headers.GetValues("Content-Type").Should().Contain("text/html; charset=utf-8");
+        _ = customerLookup.DidNotReceive().FindByDocumentNumberAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public void Issue_WithSigningKeyShorterThanThirtyTwoCharacters_Throws()
+    {
+        var issuer = new CustomerTokenIssuer(Options.Create(new CustomerJwtOptions { SigningKey = "short-signing-key" }));
+
+        var issue = () => issuer.Issue(Guid.NewGuid(), ValidCpf);
+
+        issue.Should().Throw<InvalidOperationException>()
+            .WithMessage("CustomerJwt:SigningKey must contain at least 32 characters.");
+    }
+
     [Theory]
     [InlineData("12345678900")]
     [InlineData("04252011000111")]
     [InlineData("11111111111")]
+    [InlineData("52998224725ABC")]
     [InlineData("not-a-document")]
     public void IsValid_WithInvalidCpfOrCnpj_ReturnsFalse(string documentNumber)
     {
@@ -121,7 +146,8 @@ public sealed class AuthenticateCustomerFunctionTests
     private static AuthenticateCustomerFunction CreateFunction(ICustomerLookupService customerLookup) =>
         new(
             new CustomerTokenIssuer(Options.Create(new CustomerJwtOptions { SigningKey = SigningKey })),
-            customerLookup);
+            customerLookup,
+            Options.Create(new CustomerJwtOptions { SigningKey = SigningKey }));
 
     private static HttpRequestData CreatePostRequest(string body)
     {
@@ -130,6 +156,17 @@ public sealed class AuthenticateCustomerFunctionTests
         request.Method.Returns("POST");
         request.Url.Returns(new Uri("https://localhost/api/auth/customer"));
         request.Body.Returns(new MemoryStream(Encoding.UTF8.GetBytes(body)));
+        request.CreateResponse().Returns(_ => new TestHttpResponseData(context));
+
+        return request;
+    }
+
+    private static HttpRequestData CreateGetRequest(string query)
+    {
+        var context = Substitute.For<FunctionContext>();
+        var request = Substitute.For<HttpRequestData>(context);
+        request.Method.Returns("GET");
+        request.Url.Returns(new Uri($"https://localhost/api/auth/customer{query}"));
         request.CreateResponse().Returns(_ => new TestHttpResponseData(context));
 
         return request;

@@ -5,7 +5,6 @@ using System.Net;
 using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
-using System.Web;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Extensions.Options;
@@ -13,8 +12,10 @@ using Microsoft.IdentityModel.Tokens;
 
 public sealed class AuthenticateCustomerFunction(
     CustomerTokenIssuer tokenIssuer,
-    ICustomerLookupService customerLookupService)
+    ICustomerLookupService customerLookupService,
+    IOptions<CustomerJwtOptions> options)
 {
+    private readonly CustomerJwtOptions _options = options.Value;
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
 
     [Function("AuthFunctionRoot")]
@@ -39,26 +40,9 @@ public sealed class AuthenticateCustomerFunction(
             return optionsResponse;
         }
 
-        // Handle GET (Browser navigation or query string testing)
+        // GET only serves the interactive documentation page.
         if (request.Method.Equals("GET", StringComparison.OrdinalIgnoreCase))
         {
-            var query = HttpUtility.ParseQueryString(request.Url.Query);
-            var queryDoc = query["documentNumber"];
-
-            if (!string.IsNullOrWhiteSpace(queryDoc))
-            {
-                if (!DocumentNumberValidator.IsValid(queryDoc))
-                {
-                    return await CreateInvalidDocumentResponseAsync(request, cancellationToken).ConfigureAwait(false);
-                }
-
-                return await CreateAuthenticationResponseAsync(
-                    request,
-                    NormalizeDocumentNumber(queryDoc),
-                    cancellationToken).ConfigureAwait(false);
-            }
-
-            // Return interactive HTML documentation & test page for browser navigation
             var htmlResponse = request.CreateResponse(HttpStatusCode.OK);
             AddCorsHeaders(htmlResponse);
             htmlResponse.Headers.Add("Content-Type", "text/html; charset=utf-8");
@@ -131,14 +115,14 @@ public sealed class AuthenticateCustomerFunction(
         return response;
     }
 
-    private static void AddCorsHeaders(HttpResponseData response)
+    private void AddCorsHeaders(HttpResponseData response)
     {
-        response.Headers.Add("Access-Control-Allow-Origin", "*");
+        response.Headers.Add("Access-Control-Allow-Origin", _options.CorsOrigin);
         response.Headers.Add("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
         response.Headers.Add("Access-Control-Allow-Headers", "Content-Type, Authorization");
     }
 
-    private static Task<HttpResponseData> CreateInvalidDocumentResponseAsync(
+    private Task<HttpResponseData> CreateInvalidDocumentResponseAsync(
         HttpRequestData request,
         CancellationToken cancellationToken) =>
         CreateProblemResponseAsync(
@@ -148,7 +132,7 @@ public sealed class AuthenticateCustomerFunction(
             "documentNumber must be a valid CPF or CNPJ.",
             cancellationToken);
 
-    private static async Task<HttpResponseData> CreateProblemResponseAsync(
+    private async Task<HttpResponseData> CreateProblemResponseAsync(
         HttpRequestData request,
         HttpStatusCode statusCode,
         string title,
@@ -442,6 +426,11 @@ public sealed class CustomerTokenIssuer(IOptions<CustomerJwtOptions> options)
 
     public IssuedCustomerToken Issue(Guid customerId, string documentNumber)
     {
+        if (_options.SigningKey.Length < 32)
+        {
+            throw new InvalidOperationException("CustomerJwt:SigningKey must contain at least 32 characters.");
+        }
+
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_options.SigningKey));
         var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
         var expirationMinutes = _options.ExpirationMinutes > 0 ? _options.ExpirationMinutes : 60;
@@ -478,6 +467,7 @@ public sealed class CustomerJwtOptions
     public string Issuer { get; set; } = "CatCar";
     public string Audience { get; set; } = "CatCar.Api";
     public int ExpirationMinutes { get; set; } = 60;
+    public string CorsOrigin { get; set; } = "https://localhost:7071";
 }
 
 public static class DocumentNumberValidator
@@ -485,6 +475,11 @@ public static class DocumentNumberValidator
     public static bool IsValid(string? documentNumber)
     {
         if (string.IsNullOrWhiteSpace(documentNumber))
+        {
+            return false;
+        }
+
+        if (documentNumber.Any(static character => !char.IsDigit(character) && character is not '.' and not '-' and not '/'))
         {
             return false;
         }
