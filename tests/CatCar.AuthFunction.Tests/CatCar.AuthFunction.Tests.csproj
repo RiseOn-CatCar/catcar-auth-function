@@ -20,6 +20,6 @@
     <PackageReference Include="NSubstitute" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\..\src\Functions\CatCar.AuthFunction\CatCar.AuthFunction.csproj" />
+    <ProjectReference Include="..\..\src\CatCar.AuthFunction\CatCar.AuthFunction.csproj" />
   </ItemGroup>
 </Project>

@@ -14,7 +14,7 @@
     <PackageReference Include="Npgsql" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\Host\CatCar.ServiceDefaults\CatCar.ServiceDefaults.csproj" />
+    <ProjectReference Include="..\CatCar.ServiceDefaults\CatCar.ServiceDefaults.csproj" />
   </ItemGroup>
   <ItemGroup>
     <None Update="host.json">

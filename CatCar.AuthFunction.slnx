@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/CatCar.AuthFunction/CatCar.AuthFunction.csproj" />
+    <Project Path="src/CatCar.ServiceDefaults/CatCar.ServiceDefaults.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/CatCar.AuthFunction.Tests/CatCar.AuthFunction.Tests.csproj" />
+  </Folder>
+</Solution>
