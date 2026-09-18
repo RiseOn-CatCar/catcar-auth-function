@@ -65,7 +65,7 @@ jobs:
         run: |
           az containerapp update \
             --name ${{ vars.CONTAINER_APP_NAME || 'catcar-auth-function-homolog' }} \
-            --resource-group ${{ vars.RESOURCE_GROUP || vars.CATCAR_FOUNDATION_RESOURCE_GROUP || 'rg-catcar-homolog' }} \
+            --resource-group ${{ vars.RESOURCE_GROUP || vars.CATCAR_FOUNDATION_RESOURCE_GROUP || 'catcar-homolog' }} \
             --image "${{ vars.ACR_NAME }}.azurecr.io/catcar-auth-function:${{ github.sha }}"
 
   deploy-production:
@@ -84,5 +84,5 @@ jobs:
         run: |
           az containerapp update \
             --name ${{ vars.CONTAINER_APP_NAME || 'catcar-auth-function-prod' }} \
-            --resource-group ${{ vars.RESOURCE_GROUP || vars.CATCAR_FOUNDATION_RESOURCE_GROUP || 'CatCar' }} \
+            --resource-group ${{ vars.RESOURCE_GROUP || vars.CATCAR_FOUNDATION_RESOURCE_GROUP || 'catcar-prod' }} \
             --image "${{ vars.ACR_NAME }}.azurecr.io/catcar-auth-function:${{ github.sha }}"
