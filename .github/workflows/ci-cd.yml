@@ -29,7 +29,8 @@ jobs:
   docker-build:
     needs: build-and-test
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && (vars.AZURE_DEPLOY_CLIENT_ID != '' || vars.AZURE_CLIENT_ID != '')
+    if: github.event_name == 'push'
+    environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'homologation' }}
     steps:
       - uses: actions/checkout@v4
       - name: Azure Login
@@ -50,7 +51,7 @@ jobs:
 
   deploy-homologation:
     needs: docker-build
-    if: github.ref == 'refs/heads/develop' && github.event_name == 'push' && (vars.AZURE_DEPLOY_CLIENT_ID != '' || vars.AZURE_CLIENT_ID != '')
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
     runs-on: ubuntu-latest
     environment: homologation
     steps:
@@ -69,7 +70,7 @@ jobs:
 
   deploy-production:
     needs: docker-build
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && (vars.AZURE_DEPLOY_CLIENT_ID != '' || vars.AZURE_CLIENT_ID != '')
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     environment: production
     steps:
