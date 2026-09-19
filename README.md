@@ -4,30 +4,47 @@ Serverless Azure Function responsible for customer authentication via CPF in the
 
 ---
 
-## Architecture & Responsibilities
+## Dedicated Serverless Authentication Architecture
 
-- **Function Trigger**: HTTP Trigger (`POST /api/auth/customer`)
-- **Authentication**: Validates customer CPF and active status directly against the `service_operations.customers` PostgreSQL table using a least-privilege read-only connection.
-- **JWT Issuance**: Issues signed asymmetric/symmetric JWT access tokens (Audience: `CatCar.Api`, Issuer: `CatCar`) containing `sub` (customer ID), `name`, `email`, and role claims.
-- **Runtime**: .NET 10.0 isolated worker process hosted on Azure Container Apps / Azure Functions.
+```mermaid
+flowchart LR
+    Client[Client / Azure APIM] -->|POST /api/auth/customer| Trigger[Azure Function HTTP Trigger<br/>.NET 10 Isolated Worker]
+    Trigger --> Validate[Normalize document number<br/>CPF check-digit validation]
+    Validate --> Lookup[Least-privilege read-only lookup]
+    Lookup --> Customers[(PostgreSQL<br/>service_operations.customers)]
+    Lookup -->|Active customer| Issuer[HMAC-SHA256 JWT Token Issuer]
+    Issuer -->|Customer JWT: sub, customer_id, role| Client
+```
 
-```
-┌───────────────┐        POST /api/auth/customer        ┌───────────────────────┐
-│               ├──────────────────────────────────────►│                       │
-│    Client     │                                       │  CatCar.AuthFunction  │
-│ (Via APIM/Web)│◄──────────────────────────────────────┤  (Azure Function .NET)│
-│               │        200 OK + JWT Bearer Token      └───┬───────────────┬───┘
-└───────────────┘                                           │               │
-                                              SELECT active │               │ Sign Token
-                                              FROM customers│               ▼
-                                                            ▼        ┌─────────────┐
-                                                    ┌───────────────┐│ HMAC-SHA256 │
-                                                    │  PostgreSQL   ││ Signing Key │
-                                                    │(service_ops)  │└─────────────┘
-                                                    └───────────────┘
-```
+The Function only authenticates active customer records. It normalizes the submitted CPF, rejects an invalid check digit before querying the database, uses the dedicated read-only connection for `service_operations.customers`, and issues a short-lived CatCar API JWT only after a successful lookup.
 
 ---
+
+## API & Postman
+
+- **Customer authentication endpoint:** `POST /api/auth/customer`
+- **Interactive endpoint page (local Function host):** [http://localhost:7071/api/auth/customer](http://localhost:7071/api/auth/customer)
+- **Platform Swagger UI:** [http://localhost:5000/swagger](http://localhost:5000/swagger)
+- **Platform Scalar API Reference:** [http://localhost:5000/docs](http://localhost:5000/docs)
+- **Versioned Postman collection:** [`CatCar_Platform.postman_collection.json`](https://github.com/RiseOn-CatCar/catcar-platform/blob/main/docs/postman/CatCar_Platform.postman_collection.json)
+- **Postman environment template:** [`CatCar_Platform.postman_environment.json`](https://github.com/RiseOn-CatCar/catcar-platform/blob/main/docs/postman/CatCar_Platform.postman_environment.json)
+
+Authenticate a customer directly against the local Function host:
+
+```bash
+curl --request POST http://localhost:7071/api/auth/customer \
+  --header 'Content-Type: application/json' \
+  --data '{"documentNumber":"529.982.247-25"}'
+```
+
+When testing the production routing boundary, submit the same request to the APIM base URL:
+
+```bash
+curl --request POST "$APIM_URL/api/auth/customer" \
+  --header 'Content-Type: application/json' \
+  --header "X-Correlation-Id: $(uuidgen)" \
+  --data '{"documentNumber":"529.982.247-25"}'
+```
 
 ## Project Structure
 
