@@ -49,6 +49,18 @@ public sealed class AuthenticateCustomerFunction(
             await htmlResponse.WriteStringAsync(GetInteractiveHtmlPage(), cancellationToken).ConfigureAwait(false);
             return htmlResponse;
         }
+        // Enforce APIM origin gateway key check in production for POST requests
+        var expectedGatewayKey = Environment.GetEnvironmentVariable("Gateway__BackendKey");
+        if (!string.IsNullOrEmpty(expectedGatewayKey) && request.Method.Equals("POST", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!request.Headers.TryGetValues("X-CatCar-Gateway-Key", out var headerValues) ||
+                !headerValues.Any(v => string.Equals(v, expectedGatewayKey, StringComparison.Ordinal)))
+            {
+                var forbiddenResponse = request.CreateResponse(HttpStatusCode.Forbidden);
+                AddCorsHeaders(forbiddenResponse);
+                return forbiddenResponse;
+            }
+        }
 
         // Handle POST (Standard API authentication)
         CustomerAuthenticationRequest? authenticationRequest = null;

@@ -2,16 +2,22 @@ name: Auth Function CI/CD
 
 on:
   push:
-    branches: [develop, main]
+    branches: [main]
+    tags: ['v*.*.*']
   pull_request:
-    branches: [develop, main]
+    branches: [main]
 
 permissions:
   contents: read
   id-token: write
 
+concurrency:
+  group: catcar-auth-function-prod
+  cancel-in-progress: false
+
 jobs:
   build-and-test:
+    name: Build & Test Auth Function
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,63 +32,90 @@ jobs:
       - name: Run unit tests
         run: dotnet test CatCar.AuthFunction.slnx -c Release --no-build
 
-  docker-build:
-    needs: build-and-test
+  validate-infra:
+    name: Validate Auth Infra Terraform
     runs-on: ubuntu-latest
-    if: github.event_name == 'push'
-    environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'homologation' }}
     steps:
       - uses: actions/checkout@v4
-      - name: Azure Login
-        uses: azure/login@v2
-        with:
-          client-id: ${{ vars.AZURE_DEPLOY_CLIENT_ID || vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - name: ACR Login
-        run: az acr login --name ${{ vars.ACR_NAME }}
-      - name: Build and Push Docker Image
-        run: |
-          IMAGE="${{ vars.ACR_NAME }}.azurecr.io/catcar-auth-function"
-          TAG="${{ github.sha }}"
-          docker build -t "$IMAGE:$TAG" -t "$IMAGE:latest" .
-          docker push "$IMAGE:$TAG"
-          docker push "$IMAGE:latest"
-
-  deploy-homologation:
-    needs: docker-build
-    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
-    runs-on: ubuntu-latest
-    environment: homologation
-    steps:
-      - name: Azure Login
-        uses: azure/login@v2
-        with:
-          client-id: ${{ vars.AZURE_DEPLOY_CLIENT_ID || vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - name: Update Azure Container App
-        run: |
-          az containerapp update \
-            --name ${{ vars.CONTAINER_APP_NAME || 'catcar-auth-function-homolog' }} \
-            --resource-group ${{ vars.RESOURCE_GROUP || vars.CATCAR_FOUNDATION_RESOURCE_GROUP || 'catcar-homolog' }} \
-            --image "${{ vars.ACR_NAME }}.azurecr.io/catcar-auth-function:${{ github.sha }}"
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+      - name: Terraform Init
+        run: terraform -chdir=infra init -backend=false
+      - name: Terraform Format Check
+        run: terraform -chdir=infra fmt -check -recursive
+      - name: Terraform Validate
+        run: terraform -chdir=infra validate
 
   deploy-production:
-    needs: docker-build
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    name: Deploy Production Auth Function
+    needs: [build-and-test, validate-infra]
+    if: startsWith(github.ref, 'refs/tags/v') && (vars.AZURE_CLIENT_ID != '' || vars.AZURE_DEPLOY_CLIENT_ID != '')
     runs-on: ubuntu-latest
     environment: production
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate Release Tag Contract
+        run: |
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          echo "Validating tag $TAG_NAME..."
+          if [[ ! "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Tag $TAG_NAME does not follow strict SemVer syntax (vX.Y.Z)"
+            exit 1
+          fi
+          git fetch origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Tag commit $GITHUB_SHA is not reachable from origin/main"
+            exit 1
+          fi
+          echo "Tag $TAG_NAME contract validated successfully."
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
       - name: Azure Login
         uses: azure/login@v2
         with:
           client-id: ${{ vars.AZURE_DEPLOY_CLIENT_ID || vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - name: Update Azure Container App
+
+      - name: Terraform Init (Auth Function Production)
         run: |
-          az containerapp update \
-            --name ${{ vars.CONTAINER_APP_NAME || 'catcar-auth-function-prod' }} \
-            --resource-group ${{ vars.RESOURCE_GROUP || vars.CATCAR_FOUNDATION_RESOURCE_GROUP || 'catcar-prod' }} \
-            --image "${{ vars.ACR_NAME }}.azurecr.io/catcar-auth-function:${{ github.sha }}"
+          terraform -chdir=infra init -input=false \
+            -backend-config="resource_group_name=${{ vars.AZURE_TF_STATE_RG || 'catcar-tfstate' }}" \
+            -backend-config="storage_account_name=${{ vars.AZURE_TF_STATE_STORAGE_ACCOUNT || 'stcatcartfstate' }}" \
+            -backend-config="container_name=${{ vars.TF_BACKEND_CONTAINER || 'tfstate' }}" \
+            -backend-config="key=catcar-auth.tfstate" \
+            -backend-config="use_azuread_auth=true"
+
+      - name: Terraform Plan & Apply (Auth Function Production)
+        run: |
+          terraform -chdir=infra plan -input=false -out=auth.tfplan
+          terraform -chdir=infra apply -input=false -auto-approve auth.tfplan
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Publish Function App Package
+        run: dotnet publish src/CatCar.AuthFunction/CatCar.AuthFunction.csproj -c Release -o ./publish
+
+      - name: Deploy to Azure Function App
+        uses: azure/functions-action@v1
+        with:
+          app-name: ${{ vars.FUNCTION_APP_NAME || format('func-catcar-prod-{0}', substring(vars.AZURE_SUBSCRIPTION_ID, 0, 8)) }}
+          package: ./publish
+
+      - name: Smoke Test Auth Route via APIM
+        run: |
+          APIM_HOST="${{ vars.APIM_NAME || format('apim-catcar-prod-{0}', substring(vars.AZURE_SUBSCRIPTION_ID, 0, 8)) }}.azure-api.net"
+          echo "Testing customer auth GET endpoint at https://$APIM_HOST/api/auth/customer..."
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://$APIM_HOST/api/auth/customer" || echo "000")
+          echo "HTTP Status: $STATUS"
+          if [[ "$STATUS" != "200" ]]; then
+            echo "::warning::Customer auth GET returned status $STATUS (may be cold or starting)."
+          fi
