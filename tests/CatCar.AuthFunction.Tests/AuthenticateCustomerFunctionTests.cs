@@ -10,6 +10,7 @@ using FluentAssertions;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Logging;
 using Microsoft.IdentityModel.Tokens;
 using NSubstitute;
 using Xunit;
@@ -101,16 +102,17 @@ public sealed class AuthenticateCustomerFunctionTests
     }
 
     [Fact]
-    public async Task Run_GetWithDocumentNumber_ReturnsDocumentationWithoutIssuingToken()
+    public void Run_OptionsRequest_ReturnsNoContentCorsAndCorrelationId()
     {
-        var customerLookup = Substitute.For<ICustomerLookupService>();
-        var function = CreateFunction(customerLookup);
+        var function = CreateFunction(Substitute.For<ICustomerLookupService>());
+        const string correlationId = "0198f2d2-7c16-7b1f-ae0c-4b2d7c1f9a40";
 
-        var response = await function.Run(CreateGetRequest($"?documentNumber={ValidCpf}"), CancellationToken.None);
+        var response = function.Preflight(CreateOptionsRequest(correlationId));
 
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
-        response.Headers.GetValues("Content-Type").Should().Contain("text/html; charset=utf-8");
-        _ = customerLookup.DidNotReceive().FindByDocumentNumberAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+        response.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        response.Headers.GetValues("Access-Control-Allow-Headers").Single()
+            .Should().Contain("X-Correlation-Id");
+        response.Headers.GetValues("X-Correlation-Id").Should().ContainSingle().Which.Should().Be(correlationId);
     }
 
     [Fact]
@@ -142,31 +144,41 @@ public sealed class AuthenticateCustomerFunctionTests
     {
         DocumentNumberValidator.IsValid(documentNumber).Should().BeTrue();
     }
-
     private static AuthenticateCustomerFunction CreateFunction(ICustomerLookupService customerLookup) =>
         new(
             new CustomerTokenIssuer(Options.Create(new CustomerJwtOptions { SigningKey = SigningKey })),
             customerLookup,
-            Options.Create(new CustomerJwtOptions { SigningKey = SigningKey }));
-
-    private static HttpRequestData CreatePostRequest(string body)
+            Options.Create(new CustomerJwtOptions { SigningKey = SigningKey }),
+            Substitute.For<ILogger<AuthenticateCustomerFunction>>());
+    private static HttpRequestData CreatePostRequest(string body, string? correlationId = null)
     {
         var context = Substitute.For<FunctionContext>();
         var request = Substitute.For<HttpRequestData>(context);
+        var headers = new HttpHeadersCollection();
+        if (correlationId is not null)
+        {
+            headers.Add("X-Correlation-Id", correlationId);
+        }
+
         request.Method.Returns("POST");
         request.Url.Returns(new Uri("https://localhost/api/auth/customer"));
+        request.Headers.Returns(headers);
         request.Body.Returns(new MemoryStream(Encoding.UTF8.GetBytes(body)));
         request.CreateResponse().Returns(_ => new TestHttpResponseData(context));
 
         return request;
     }
 
-    private static HttpRequestData CreateGetRequest(string query)
+    private static HttpRequestData CreateOptionsRequest(string correlationId)
     {
         var context = Substitute.For<FunctionContext>();
         var request = Substitute.For<HttpRequestData>(context);
-        request.Method.Returns("GET");
-        request.Url.Returns(new Uri($"https://localhost/api/auth/customer{query}"));
+        var headers = new HttpHeadersCollection();
+        headers.Add("X-Correlation-Id", correlationId);
+
+        request.Method.Returns("OPTIONS");
+        request.Url.Returns(new Uri("https://localhost/api/auth/customer"));
+        request.Headers.Returns(headers);
         request.CreateResponse().Returns(_ => new TestHttpResponseData(context));
 
         return request;

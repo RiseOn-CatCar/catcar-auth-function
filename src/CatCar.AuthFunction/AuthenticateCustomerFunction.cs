@@ -5,15 +5,19 @@ using System.Net;
 using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
+using System.ComponentModel.DataAnnotations;
+using Microsoft.Azure.WebJobs.Extensions.OpenApi.Core.Attributes;
+using Microsoft.Extensions.Logging;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 
-public sealed class AuthenticateCustomerFunction(
+public sealed partial class AuthenticateCustomerFunction(
     CustomerTokenIssuer tokenIssuer,
     ICustomerLookupService customerLookupService,
-    IOptions<CustomerJwtOptions> options)
+    IOptions<CustomerJwtOptions> options,
+    ILogger<AuthenticateCustomerFunction> logger)
 {
     private readonly CustomerJwtOptions _options = options.Value;
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
@@ -23,32 +27,39 @@ public sealed class AuthenticateCustomerFunction(
         [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "")] HttpRequestData request)
     {
         var response = request.CreateResponse(HttpStatusCode.Redirect);
-        response.Headers.Add("Location", "/api/auth/customer");
+        response.Headers.Add("Location", "/api/swagger/ui");
         return response;
     }
 
-    [Function(nameof(AuthenticateCustomerFunction))]
+    [Function("CustomerAuthenticationPreflight")]
+    public HttpResponseData Preflight(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "options", Route = "auth/customer")] HttpRequestData request)
+    {
+        var response = request.CreateResponse(HttpStatusCode.NoContent);
+        AddCorsHeaders(response);
+        AddCorrelationHeader(response, GetCorrelationId(request).ToString());
+        return response;
+    }
+
+    [Function("AuthenticateCustomer")]
+    [OpenApiOperation(operationId: "AuthenticateCustomer", tags: new[] { "Customer Authentication" }, Summary = "Authenticate an active customer", Description = "Validates a CPF or CNPJ and returns a CatCar customer JWT.")]
+    [OpenApiRequestBody(contentType: "application/json", bodyType: typeof(CustomerAuthenticationRequest), Required = true, Description = "Customer document used for authentication.")]
+    [OpenApiResponseWithBody(statusCode: HttpStatusCode.OK, contentType: "application/json", bodyType: typeof(CustomerAuthenticationResponse), Summary = "Customer authenticated")]
+    [OpenApiResponseWithBody(statusCode: HttpStatusCode.BadRequest, contentType: "application/problem+json", bodyType: typeof(ProblemDetailsResponse), Summary = "Invalid document")]
+    [OpenApiResponseWithBody(statusCode: HttpStatusCode.Forbidden, contentType: "application/problem+json", bodyType: typeof(ProblemDetailsResponse), Summary = "Customer inactive")]
+    [OpenApiResponseWithBody(statusCode: HttpStatusCode.NotFound, contentType: "application/problem+json", bodyType: typeof(ProblemDetailsResponse), Summary = "Customer not found")]
     public async Task<HttpResponseData> Run(
-        [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", "options", Route = "auth/customer")] HttpRequestData request,
+        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "auth/customer")] HttpRequestData request,
         CancellationToken cancellationToken)
     {
-        // Handle CORS preflight
-        if (request.Method.Equals("OPTIONS", StringComparison.OrdinalIgnoreCase))
+        var correlationId = GetCorrelationId(request);
+        var correlationIdValue = correlationId.ToString();
+        using var scope = logger.BeginScope(new Dictionary<string, object?>
         {
-            var optionsResponse = request.CreateResponse(HttpStatusCode.NoContent);
-            AddCorsHeaders(optionsResponse);
-            return optionsResponse;
-        }
+            ["CorrelationId"] = correlationIdValue
+        });
+        System.Diagnostics.Activity.Current?.SetTag("catcar.correlation_id", correlationIdValue);
 
-        // GET only serves the interactive documentation page.
-        if (request.Method.Equals("GET", StringComparison.OrdinalIgnoreCase))
-        {
-            var htmlResponse = request.CreateResponse(HttpStatusCode.OK);
-            AddCorsHeaders(htmlResponse);
-            htmlResponse.Headers.Add("Content-Type", "text/html; charset=utf-8");
-            await htmlResponse.WriteStringAsync(GetInteractiveHtmlPage(), cancellationToken).ConfigureAwait(false);
-            return htmlResponse;
-        }
         // Enforce APIM origin gateway key check in production for POST requests
         var expectedGatewayKey = Environment.GetEnvironmentVariable("Gateway__BackendKey");
         if (!string.IsNullOrEmpty(expectedGatewayKey) && request.Method.Equals("POST", StringComparison.OrdinalIgnoreCase))
@@ -56,13 +67,15 @@ public sealed class AuthenticateCustomerFunction(
             if (!request.Headers.TryGetValues("X-CatCar-Gateway-Key", out var headerValues) ||
                 !headerValues.Any(v => string.Equals(v, expectedGatewayKey, StringComparison.Ordinal)))
             {
-                var forbiddenResponse = request.CreateResponse(HttpStatusCode.Forbidden);
-                AddCorsHeaders(forbiddenResponse);
-                return forbiddenResponse;
+                return await CreateProblemResponseAsync(
+                    request,
+                    correlationIdValue,
+                    HttpStatusCode.Forbidden,
+                    "Gateway key rejected",
+                    "The request origin is not authorized.",
+                    cancellationToken).ConfigureAwait(false);
             }
         }
-
-        // Handle POST (Standard API authentication)
         CustomerAuthenticationRequest? authenticationRequest = null;
         try
         {
@@ -71,32 +84,37 @@ public sealed class AuthenticateCustomerFunction(
                 SerializerOptions,
                 cancellationToken).ConfigureAwait(false);
         }
-        catch
+        catch (JsonException)
         {
-            // Fallthrough to invalid document
+            // Fall through to the same response as an invalid document.
         }
 
         if (authenticationRequest is null || !DocumentNumberValidator.IsValid(authenticationRequest.DocumentNumber))
         {
-            return await CreateInvalidDocumentResponseAsync(request, cancellationToken).ConfigureAwait(false);
+            LogInvalidDocument();
+            return await CreateInvalidDocumentResponseAsync(request, correlationIdValue, cancellationToken).ConfigureAwait(false);
         }
 
         return await CreateAuthenticationResponseAsync(
             request,
             NormalizeDocumentNumber(authenticationRequest.DocumentNumber),
+            correlationIdValue,
             cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<HttpResponseData> CreateAuthenticationResponseAsync(
         HttpRequestData request,
         string documentNumber,
+        string correlationId,
         CancellationToken cancellationToken)
     {
         var customer = await customerLookupService.FindByDocumentNumberAsync(documentNumber, cancellationToken).ConfigureAwait(false);
         if (customer is null)
         {
+            LogCustomerNotFound();
             return await CreateProblemResponseAsync(
                 request,
+                correlationId,
                 HttpStatusCode.NotFound,
                 "Customer not found",
                 "No customer was found for the provided document number.",
@@ -105,8 +123,10 @@ public sealed class AuthenticateCustomerFunction(
 
         if (!customer.IsActive)
         {
+            LogInactiveCustomer(customer.Id);
             return await CreateProblemResponseAsync(
                 request,
+                correlationId,
                 HttpStatusCode.Forbidden,
                 "Customer is inactive",
                 "The customer associated with the provided document number is inactive.",
@@ -114,8 +134,10 @@ public sealed class AuthenticateCustomerFunction(
         }
 
         var issuedToken = tokenIssuer.Issue(customer.Id, documentNumber);
+        LogCustomerAuthenticated(customer.Id);
         var response = request.CreateResponse(HttpStatusCode.OK);
         AddCorsHeaders(response);
+        AddCorrelationHeader(response, correlationId);
         response.Headers.Add("Content-Type", "application/json; charset=utf-8");
 
         await JsonSerializer.SerializeAsync(
@@ -130,15 +152,17 @@ public sealed class AuthenticateCustomerFunction(
     private void AddCorsHeaders(HttpResponseData response)
     {
         response.Headers.Add("Access-Control-Allow-Origin", _options.CorsOrigin);
-        response.Headers.Add("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-        response.Headers.Add("Access-Control-Allow-Headers", "Content-Type, Authorization");
+        response.Headers.Add("Access-Control-Allow-Methods", "POST, OPTIONS");
+        response.Headers.Add("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Correlation-Id, X-CatCar-Gateway-Key");
     }
 
     private Task<HttpResponseData> CreateInvalidDocumentResponseAsync(
         HttpRequestData request,
+        string correlationId,
         CancellationToken cancellationToken) =>
         CreateProblemResponseAsync(
             request,
+            correlationId,
             HttpStatusCode.BadRequest,
             "Invalid document number",
             "documentNumber must be a valid CPF or CNPJ.",
@@ -146,6 +170,7 @@ public sealed class AuthenticateCustomerFunction(
 
     private async Task<HttpResponseData> CreateProblemResponseAsync(
         HttpRequestData request,
+        string correlationId,
         HttpStatusCode statusCode,
         string title,
         string detail,
@@ -153,6 +178,7 @@ public sealed class AuthenticateCustomerFunction(
     {
         var response = request.CreateResponse(statusCode);
         AddCorsHeaders(response);
+        AddCorrelationHeader(response, correlationId);
         response.Headers.Add("Content-Type", "application/problem+json; charset=utf-8");
 
         await JsonSerializer.SerializeAsync(
@@ -169,267 +195,33 @@ public sealed class AuthenticateCustomerFunction(
         return response;
     }
 
+    private static Guid GetCorrelationId(HttpRequestData request)
+    {
+        var header = request.Headers.TryGetValues("X-Correlation-Id", out var values)
+            ? values.FirstOrDefault()
+            : null;
+        return Guid.TryParse(header, out var correlationId)
+            ? correlationId
+            : Guid.CreateVersion7();
+    }
+
+    private static void AddCorrelationHeader(HttpResponseData response, string correlationId) =>
+        response.Headers.Add("X-Correlation-Id", correlationId);
+
     private static string NormalizeDocumentNumber(string documentNumber) =>
         string.Concat(documentNumber.Where(char.IsDigit));
 
-    private static string GetInteractiveHtmlPage() =>
-        """
-        <!DOCTYPE html>
-        <html lang="pt-BR">
-        <head>
-          <meta charset="utf-8" />
-          <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-          <title>CatCar — Customer Authentication Service</title>
-          <style>
-            :root {
-              --bg: #0f172a;
-              --card: #1e293b;
-              --primary: #8b5cf6;
-              --primary-hover: #7c3aed;
-              --text: #f8fafc;
-              --text-muted: #94a3b8;
-              --border: #334155;
-              --success: #10b981;
-              --error: #ef4444;
-              --code-bg: #090d16;
-            }
-            * { box-sizing: border-box; margin: 0; padding: 0; }
-            body {
-              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-              background-color: var(--bg);
-              color: var(--text);
-              display: flex;
-              justify-content: center;
-              padding: 2rem 1rem;
-              min-height: 100vh;
-            }
-            .container {
-              max-width: 720px;
-              width: 100%;
-            }
-            .header {
-              text-align: center;
-              margin-bottom: 2rem;
-            }
-            .header h1 {
-              font-size: 1.875rem;
-              font-weight: 700;
-              margin-bottom: 0.5rem;
-              background: linear-gradient(135deg, #a78bfa, #c084fc);
-              -webkit-background-clip: text;
-              -webkit-text-fill-color: transparent;
-            }
-            .badge {
-              display: inline-block;
-              background: rgba(139, 92, 246, 0.2);
-              color: #c4b5fd;
-              font-size: 0.75rem;
-              font-weight: 600;
-              padding: 0.25rem 0.75rem;
-              border-radius: 9999px;
-              border: 1px solid rgba(139, 92, 246, 0.3);
-            }
-            .card {
-              background: var(--card);
-              border: 1px solid var(--border);
-              border-radius: 0.75rem;
-              padding: 1.5rem;
-              margin-bottom: 1.5rem;
-              box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-            }
-            .card-title {
-              font-size: 1.125rem;
-              font-weight: 600;
-              margin-bottom: 1rem;
-              display: flex;
-              align-items: center;
-              gap: 0.5rem;
-            }
-            label {
-              display: block;
-              font-size: 0.875rem;
-              color: var(--text-muted);
-              margin-bottom: 0.5rem;
-            }
-            .input-group {
-              display: flex;
-              gap: 0.5rem;
-              margin-bottom: 1rem;
-            }
-            input[type="text"] {
-              flex: 1;
-              background: var(--code-bg);
-              border: 1px solid var(--border);
-              border-radius: 0.5rem;
-              padding: 0.625rem 0.875rem;
-              color: var(--text);
-              font-family: monospace;
-              font-size: 1rem;
-              outline: none;
-              transition: border-color 0.2s;
-            }
-            input[type="text"]:focus {
-              border-color: var(--primary);
-            }
-            button {
-              background: var(--primary);
-              color: white;
-              font-weight: 600;
-              border: none;
-              border-radius: 0.5rem;
-              padding: 0.625rem 1.25rem;
-              cursor: pointer;
-              transition: background-color 0.2s, transform 0.1s;
-            }
-            button:hover { background: var(--primary-hover); }
-            button:active { transform: scale(0.98); }
-            .btn-outline {
-              background: transparent;
-              border: 1px solid var(--border);
-              color: var(--text-muted);
-            }
-            .btn-outline:hover {
-              background: rgba(255, 255, 255, 0.05);
-              color: var(--text);
-            }
-            .quick-buttons {
-              display: flex;
-              gap: 0.5rem;
-              margin-bottom: 1rem;
-            }
-            .quick-buttons button {
-              font-size: 0.75rem;
-              padding: 0.35rem 0.65rem;
-            }
-            .result-box {
-              background: var(--code-bg);
-              border: 1px solid var(--border);
-              border-radius: 0.5rem;
-              padding: 1rem;
-              font-family: monospace;
-              font-size: 0.875rem;
-              white-space: pre-wrap;
-              word-break: break-all;
-              max-height: 250px;
-              overflow-y: auto;
-              color: var(--text-muted);
-            }
-            .result-box.success { color: var(--success); border-color: rgba(16, 185, 129, 0.4); }
-            .result-box.error { color: var(--error); border-color: rgba(239, 68, 68, 0.4); }
-            .token-display {
-              margin-top: 1rem;
-              display: none;
-            }
-            .token-display.visible {
-              display: block;
-            }
-            .copy-btn {
-              margin-top: 0.5rem;
-              font-size: 0.75rem;
-              padding: 0.35rem 0.75rem;
-            }
-            pre {
-              background: var(--code-bg);
-              border: 1px solid var(--border);
-              border-radius: 0.5rem;
-              padding: 1rem;
-              font-family: monospace;
-              font-size: 0.8125rem;
-              overflow-x: auto;
-              color: #e2e8f0;
-            }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <div class="header">
-              <h1>🚗 CatCar Auth Serverless Function</h1>
-              <span class="badge">Azure Functions Isolated Worker (.NET 10)</span>
-            </div>
+    [LoggerMessage(EventId = 1001, Level = LogLevel.Warning, Message = "Customer authentication rejected because the document is invalid.")]
+    partial void LogInvalidDocument();
 
-            <div class="card">
-              <div class="card-title">🔑 Teste Interativo de Autenticação</div>
-              <label for="docNumber">Documento do Cliente (CPF ou CNPJ):</label>
-              <div class="input-group">
-                <input type="text" id="docNumber" value="52998224725" placeholder="Digite CPF ou CNPJ" />
-                <button id="btnSubmit" onclick="authenticate()">Autenticar</button>
-              </div>
-              <div class="quick-buttons">
-                <button class="btn-outline" onclick="setDoc('52998224725')">CPF Válido 1 (52998224725)</button>
-                <button class="btn-outline" onclick="setDoc('04252011000110')">CNPJ Válido</button>
-                <button class="btn-outline" onclick="setDoc('12345678900')">CPF Inválido</button>
-              </div>
+    [LoggerMessage(EventId = 1002, Level = LogLevel.Information, Message = "Customer authentication failed because the customer was not found.")]
+    partial void LogCustomerNotFound();
 
-              <div id="resultBox" class="result-box">Aguardando solicitação... Clique em "Autenticar" para emitir um token JWT.</div>
+    [LoggerMessage(EventId = 1003, Level = LogLevel.Warning, Message = "Customer authentication rejected because customer {CustomerId} is inactive.")]
+    partial void LogInactiveCustomer(Guid customerId);
 
-              <div id="tokenSection" class="token-display">
-                <label>Token Bearer Gerado:</label>
-                <div id="tokenBox" class="result-box success"></div>
-                <button class="btn-outline copy-btn" onclick="copyToken()">📋 Copiar Token</button>
-              </div>
-            </div>
-
-            <div class="card">
-              <div class="card-title">📡 Exemplo de Integração (cURL / HTTP)</div>
-              <pre>curl -X POST http://localhost:7071/api/auth/customer \
-          -H "Content-Type: application/json" \
-          -d '{"documentNumber": "52998224725"}'</pre>
-            </div>
-          </div>
-
-          <script>
-            function setDoc(val) {
-              document.getElementById('docNumber').value = val;
-            }
-
-            async function authenticate() {
-              const doc = document.getElementById('docNumber').value.trim();
-              const resultBox = document.getElementById('resultBox');
-              const tokenSection = document.getElementById('tokenSection');
-              const tokenBox = document.getElementById('tokenBox');
-              const btn = document.getElementById('btnSubmit');
-
-              btn.disabled = true;
-              btn.textContent = 'Autenticando...';
-              resultBox.className = 'result-box';
-              resultBox.textContent = 'Enviando requisição POST para /api/auth/customer...';
-              tokenSection.className = 'token-display';
-
-              try {
-                const response = await fetch('/api/auth/customer', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ documentNumber: doc })
-                });
-
-                const data = await response.json();
-                if (response.ok) {
-                  resultBox.className = 'result-box success';
-                  resultBox.textContent = JSON.stringify(data, null, 2);
-                  tokenBox.textContent = data.token;
-                  tokenSection.className = 'token-display visible';
-                } else {
-                  resultBox.className = 'result-box error';
-                  resultBox.textContent = 'Erro HTTP ' + response.status + ':\n' + JSON.stringify(data, null, 2);
-                }
-              } catch (err) {
-                resultBox.className = 'result-box error';
-                resultBox.textContent = 'Erro na requisição: ' + err.message;
-              } finally {
-                btn.disabled = false;
-                btn.textContent = 'Autenticar';
-              }
-            }
-
-            function copyToken() {
-              const token = document.getElementById('tokenBox').textContent;
-              navigator.clipboard.writeText(token);
-              alert('Token JWT copiado para a área de transferência!');
-            }
-          </script>
-        </body>
-        </html>
-        """;
+    [LoggerMessage(EventId = 1004, Level = LogLevel.Information, Message = "Customer {CustomerId} authenticated successfully.")]
+    partial void LogCustomerAuthenticated(Guid customerId);
 }
 
 public sealed class CustomerTokenIssuer(IOptions<CustomerJwtOptions> options)
@@ -576,7 +368,7 @@ public static class DocumentNumberValidator
     }
 }
 
-public sealed record CustomerAuthenticationRequest(string DocumentNumber);
+public sealed record CustomerAuthenticationRequest([property: Required] string DocumentNumber);
 
 public sealed record CustomerAuthenticationResponse(string Token, int ExpiresIn, string TokenType);
 
