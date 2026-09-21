@@ -1,5 +1,6 @@
 namespace CatCar.AuthFunction;
 
+using System.Diagnostics;
 using System.IdentityModel.Tokens.Jwt;
 using System.Net;
 using System.Security.Claims;
@@ -7,13 +8,15 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 
-public sealed class AuthenticateCustomerFunction(
+public sealed partial class AuthenticateCustomerFunction(
     CustomerTokenIssuer tokenIssuer,
     ICustomerLookupService customerLookupService,
-    IOptions<CustomerJwtOptions> options)
+    IOptions<CustomerJwtOptions> options,
+    ILogger<AuthenticateCustomerFunction> logger)
 {
     private readonly CustomerJwtOptions _options = options.Value;
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
@@ -32,11 +35,26 @@ public sealed class AuthenticateCustomerFunction(
         [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", "options", Route = "auth/customer")] HttpRequestData request,
         CancellationToken cancellationToken)
     {
+        Guid correlationId;
+        if (request.Headers.TryGetValues("X-Correlation-Id", out var correlationHeaderValues) &&
+            Guid.TryParse(correlationHeaderValues.FirstOrDefault(), out var parsedCorrelationId))
+        {
+            correlationId = parsedCorrelationId;
+        }
+        else
+        {
+            correlationId = Guid.CreateVersion7();
+        }
+
+        Activity.Current?.SetTag("CorrelationId", correlationId.ToString());
+        using var scope = logger.BeginScope(new Dictionary<string, object> { ["CorrelationId"] = correlationId });
+
         // Handle CORS preflight
         if (request.Method.Equals("OPTIONS", StringComparison.OrdinalIgnoreCase))
         {
             var optionsResponse = request.CreateResponse(HttpStatusCode.NoContent);
             AddCorsHeaders(optionsResponse);
+            optionsResponse.Headers.Add("X-Correlation-Id", correlationId.ToString());
             return optionsResponse;
         }
 
@@ -45,6 +63,7 @@ public sealed class AuthenticateCustomerFunction(
         {
             var htmlResponse = request.CreateResponse(HttpStatusCode.OK);
             AddCorsHeaders(htmlResponse);
+            htmlResponse.Headers.Add("X-Correlation-Id", correlationId.ToString());
             htmlResponse.Headers.Add("Content-Type", "text/html; charset=utf-8");
             await htmlResponse.WriteStringAsync(GetInteractiveHtmlPage(), cancellationToken).ConfigureAwait(false);
             return htmlResponse;
@@ -66,25 +85,30 @@ public sealed class AuthenticateCustomerFunction(
 
         if (authenticationRequest is null || !DocumentNumberValidator.IsValid(authenticationRequest.DocumentNumber))
         {
-            return await CreateInvalidDocumentResponseAsync(request, cancellationToken).ConfigureAwait(false);
+            LogInvalidDocument(logger);
+            return await CreateInvalidDocumentResponseAsync(request, correlationId, cancellationToken).ConfigureAwait(false);
         }
 
         return await CreateAuthenticationResponseAsync(
             request,
             NormalizeDocumentNumber(authenticationRequest.DocumentNumber),
+            correlationId,
             cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<HttpResponseData> CreateAuthenticationResponseAsync(
         HttpRequestData request,
         string documentNumber,
+        Guid correlationId,
         CancellationToken cancellationToken)
     {
         var customer = await customerLookupService.FindByDocumentNumberAsync(documentNumber, cancellationToken).ConfigureAwait(false);
         if (customer is null)
         {
+            LogCustomerNotFound(logger);
             return await CreateProblemResponseAsync(
                 request,
+                correlationId,
                 HttpStatusCode.NotFound,
                 "Customer not found",
                 "No customer was found for the provided document number.",
@@ -93,17 +117,21 @@ public sealed class AuthenticateCustomerFunction(
 
         if (!customer.IsActive)
         {
+            LogCustomerInactive(logger, customer.Id);
             return await CreateProblemResponseAsync(
                 request,
+                correlationId,
                 HttpStatusCode.Forbidden,
                 "Customer is inactive",
                 "The customer associated with the provided document number is inactive.",
                 cancellationToken).ConfigureAwait(false);
         }
 
+        LogCustomerAuthenticated(logger, customer.Id);
         var issuedToken = tokenIssuer.Issue(customer.Id, documentNumber);
         var response = request.CreateResponse(HttpStatusCode.OK);
         AddCorsHeaders(response);
+        response.Headers.Add("X-Correlation-Id", correlationId.ToString());
         response.Headers.Add("Content-Type", "application/json; charset=utf-8");
 
         await JsonSerializer.SerializeAsync(
@@ -119,8 +147,60 @@ public sealed class AuthenticateCustomerFunction(
     {
         response.Headers.Add("Access-Control-Allow-Origin", _options.CorsOrigin);
         response.Headers.Add("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-        response.Headers.Add("Access-Control-Allow-Headers", "Content-Type, Authorization");
+        response.Headers.Add("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Correlation-Id");
+        response.Headers.Add("Access-Control-Expose-Headers", "X-Correlation-Id");
     }
+
+    private Task<HttpResponseData> CreateInvalidDocumentResponseAsync(
+        HttpRequestData request,
+        Guid correlationId,
+        CancellationToken cancellationToken) =>
+        CreateProblemResponseAsync(
+            request,
+            correlationId,
+            HttpStatusCode.BadRequest,
+            "Invalid document number",
+            "documentNumber must be a valid CPF or CNPJ.",
+            cancellationToken);
+
+    private async Task<HttpResponseData> CreateProblemResponseAsync(
+        HttpRequestData request,
+        Guid correlationId,
+        HttpStatusCode statusCode,
+        string title,
+        string detail,
+        CancellationToken cancellationToken)
+    {
+        var response = request.CreateResponse(statusCode);
+        AddCorsHeaders(response);
+        response.Headers.Add("X-Correlation-Id", correlationId.ToString());
+        response.Headers.Add("Content-Type", "application/problem+json; charset=utf-8");
+
+        await JsonSerializer.SerializeAsync(
+            response.Body,
+            new ProblemDetailsResponse(
+                "https://www.rfc-editor.org/rfc/rfc7807#section-3.1",
+                title,
+                (int)statusCode,
+                detail,
+                request.Url.AbsolutePath),
+            SerializerOptions,
+            cancellationToken).ConfigureAwait(false);
+
+        return response;
+    }
+
+    [LoggerMessage(EventId = 101, Level = LogLevel.Warning, Message = "Customer authentication rejected because the document is invalid.")]
+    private static partial void LogInvalidDocument(ILogger logger);
+
+    [LoggerMessage(EventId = 102, Level = LogLevel.Warning, Message = "Customer authentication rejected because the customer was not found.")]
+    private static partial void LogCustomerNotFound(ILogger logger);
+
+    [LoggerMessage(EventId = 103, Level = LogLevel.Warning, Message = "Customer authentication rejected for inactive customer {CustomerId}.")]
+    private static partial void LogCustomerInactive(ILogger logger, Guid customerId);
+
+    [LoggerMessage(EventId = 104, Level = LogLevel.Information, Message = "Customer authentication succeeded for customer {CustomerId}.")]
+    private static partial void LogCustomerAuthenticated(ILogger logger, Guid customerId);
 
     private Task<HttpResponseData> CreateInvalidDocumentResponseAsync(
         HttpRequestData request,

@@ -9,11 +9,11 @@ using CatCar.AuthFunction;
 using FluentAssertions;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using NSubstitute;
 using Xunit;
-
 public sealed class AuthenticateCustomerFunctionTests
 {
     private const string SigningKey = "test-signing-key-with-at-least-thirty-two-characters";
@@ -114,6 +114,20 @@ public sealed class AuthenticateCustomerFunctionTests
     }
 
     [Fact]
+    public async Task Run_WithCorrelationIdHeader_EchoesCorrelationIdInResponse()
+    {
+        var correlationId = Guid.NewGuid();
+        var customerLookup = Substitute.For<ICustomerLookupService>();
+        var function = CreateFunction(customerLookup);
+        var headers = new HttpHeadersCollection { { "X-Correlation-Id", correlationId.ToString() } };
+        var request = CreatePostRequest("{\"documentNumber\":\"invalid\"}", headers);
+
+        var response = await function.Run(request, CancellationToken.None);
+
+        response.Headers.GetValues("X-Correlation-Id").Should().ContainSingle().Which.Should().Be(correlationId.ToString());
+    }
+
+    [Fact]
     public void Issue_WithSigningKeyShorterThanThirtyTwoCharacters_Throws()
     {
         var issuer = new CustomerTokenIssuer(Options.Create(new CustomerJwtOptions { SigningKey = "short-signing-key" }));
@@ -147,26 +161,29 @@ public sealed class AuthenticateCustomerFunctionTests
         new(
             new CustomerTokenIssuer(Options.Create(new CustomerJwtOptions { SigningKey = SigningKey })),
             customerLookup,
-            Options.Create(new CustomerJwtOptions { SigningKey = SigningKey }));
+            Options.Create(new CustomerJwtOptions { SigningKey = SigningKey }),
+            Substitute.For<ILogger<AuthenticateCustomerFunction>>());
 
-    private static HttpRequestData CreatePostRequest(string body)
+    private static HttpRequestData CreatePostRequest(string body, HttpHeadersCollection? headers = null)
     {
         var context = Substitute.For<FunctionContext>();
         var request = Substitute.For<HttpRequestData>(context);
         request.Method.Returns("POST");
         request.Url.Returns(new Uri("https://localhost/api/auth/customer"));
+        request.Headers.Returns(headers ?? new HttpHeadersCollection());
         request.Body.Returns(new MemoryStream(Encoding.UTF8.GetBytes(body)));
         request.CreateResponse().Returns(_ => new TestHttpResponseData(context));
 
         return request;
     }
 
-    private static HttpRequestData CreateGetRequest(string query)
+    private static HttpRequestData CreateGetRequest(string query, HttpHeadersCollection? headers = null)
     {
         var context = Substitute.For<FunctionContext>();
         var request = Substitute.For<HttpRequestData>(context);
         request.Method.Returns("GET");
         request.Url.Returns(new Uri($"https://localhost/api/auth/customer{query}"));
+        request.Headers.Returns(headers ?? new HttpHeadersCollection());
         request.CreateResponse().Returns(_ => new TestHttpResponseData(context));
 
         return request;

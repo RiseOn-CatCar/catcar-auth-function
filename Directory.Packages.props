@@ -6,8 +6,8 @@
   <ItemGroup>
     <!-- ===== Azure Functions ===== -->
     <PackageVersion Include="Microsoft.Azure.Functions.Worker" Version="2.52.0" />
-    <PackageVersion Include="Microsoft.Azure.Functions.Worker.Sdk" Version="2.1.0" />
     <PackageVersion Include="Microsoft.Azure.Functions.Worker.Extensions.Http.AspNetCore" Version="2.1.1" />
+    <PackageVersion Include="Microsoft.Azure.Functions.Worker.OpenTelemetry" Version="1.2.0" />
 
     <!-- ===== Database & Auth ===== -->
     <PackageVersion Include="Npgsql" Version="10.0.3" />
@@ -21,7 +21,8 @@
     <PackageVersion Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.18.0" />
     <PackageVersion Include="OpenTelemetry.Instrumentation.Http" Version="1.18.0" />
     <PackageVersion Include="OpenTelemetry.Instrumentation.Runtime" Version="1.18.0" />
-    <PackageVersion Include="Azure.Monitor.OpenTelemetry.AspNetCore" Version="1.6.0" />
+    <PackageVersion Include="Npgsql.OpenTelemetry" Version="10.0.3" />
+    <PackageVersion Include="Azure.Monitor.OpenTelemetry.Exporter" Version="1.9.0" />
 
     <!-- ===== Testing ===== -->
     <PackageVersion Include="xunit" Version="2.9.3" />

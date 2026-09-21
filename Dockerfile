@@ -7,7 +7,7 @@ COPY src/CatCar.AuthFunction/CatCar.AuthFunction.csproj src/CatCar.AuthFunction/
 COPY src/CatCar.ServiceDefaults/CatCar.ServiceDefaults.csproj src/CatCar.ServiceDefaults/
 COPY tests/CatCar.AuthFunction.Tests/CatCar.AuthFunction.Tests.csproj tests/CatCar.AuthFunction.Tests/
 
-RUN dotnet restore CatCar.AuthFunction.slnx
+RUN dotnet restore src/CatCar.AuthFunction/CatCar.AuthFunction.csproj
 
 COPY src/ src/
 COPY tests/ tests/
