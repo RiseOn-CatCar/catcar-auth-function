@@ -83,6 +83,9 @@ dotnet test CatCar.AuthFunction.slnx -c Release
 
 ## CI/CD Pipeline
 
-- **Pull Requests**: Runs build and unit test suite.
-- **Push to `develop`**: Builds and pushes container image to Azure Container Registry (ACR) and deploys to **Homologation** environment (`catcar-auth-function` Container App).
-- **Push to `main`**: Builds and pushes container image to ACR and deploys to **Production** environment.
+- **Pull requests** build and test the Function and validate its Terraform root.
+- The single Azure release deploys a Function image pinned by its SHA-256 digest. Terraform requires `<foundation-acr>.azurecr.io/catcar-auth-function@sha256:<64 lowercase hex>` and owns the Container App; foundation owns its internal environment and database owns Key Vault.
+
+Configure the Azure OIDC identifiers and shared Terraform backend coordinates. The foundation and database states must already exist, and deployed resources and state ownership must be verified before the first apply. The Function Container App name comes from the foundation state. Its default storage name is `stcatauth<suffix>`, where the suffix is the first eight hex characters of SHA-256 over `<subscription-id>:catcar` (for example, `3c4128ef`). Set `storage_account_name` to adopt an existing account, import it into its existing Terraform resource address, and review the plan before applying. Review other naming changes for replacements as well. State and Terraform plans can contain sensitive data and must not be published.
+
+The Function preserves a valid `X-Correlation-Id` GUID, or generates one when absent or invalid, and echoes it in the response. It does not log document numbers or bearer tokens.

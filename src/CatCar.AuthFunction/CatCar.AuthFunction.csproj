@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Azure.Functions.Sdk/1.1.0">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <RootNamespace>CatCar.AuthFunction</RootNamespace>
@@ -7,9 +7,6 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Azure.Functions.Worker" />
     <PackageReference Include="Microsoft.Azure.Functions.Worker.Extensions.Http.AspNetCore" />
-    <PackageReference Include="Microsoft.Azure.Functions.Worker.Sdk"
-                      OutputItemType="Analyzer"
-                      PrivateAssets="all" />
     <PackageReference Include="System.IdentityModel.Tokens.Jwt" />
     <PackageReference Include="Npgsql" />
   </ItemGroup>

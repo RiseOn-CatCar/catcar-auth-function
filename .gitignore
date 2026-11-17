@@ -7,3 +7,7 @@ TestResults/
 *.user
 *.suo
 local.settings.json
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan

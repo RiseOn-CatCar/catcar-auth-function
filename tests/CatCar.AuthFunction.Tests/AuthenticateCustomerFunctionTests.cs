@@ -20,13 +20,15 @@ public sealed class AuthenticateCustomerFunctionTests
     private const string ValidCpf = "52998224725";
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
 
-    [Fact]
-    public async Task Run_WithInvalidDocument_ReturnsBadRequest()
+    [Theory]
+    [InlineData("invalid")]
+    [InlineData("12345678900")]
+    public async Task Run_WithInvalidDocument_ReturnsBadRequest(string documentNumber)
     {
         var customerLookup = Substitute.For<ICustomerLookupService>();
         var function = CreateFunction(customerLookup);
 
-        var response = await function.Run(CreatePostRequest("{\"documentNumber\":\"invalid\"}"), CancellationToken.None);
+        var response = await function.Run(CreatePostRequest($"{{\"documentNumber\":\"{documentNumber}\"}}"), CancellationToken.None);
 
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         _ = customerLookup.DidNotReceive().FindByDocumentNumberAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
