@@ -1,8 +1,8 @@
 # Stage 1: Build
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:11.0.100 AS build
 WORKDIR /source
 
-COPY Directory.Build.props Directory.Packages.props CatCar.AuthFunction.slnx ./
+COPY global.json Directory.Build.props Directory.Packages.props CatCar.AuthFunction.slnx ./
 COPY src/CatCar.AuthFunction/CatCar.AuthFunction.csproj src/CatCar.AuthFunction/
 COPY src/CatCar.ServiceDefaults/CatCar.ServiceDefaults.csproj src/CatCar.ServiceDefaults/
 COPY tests/CatCar.AuthFunction.Tests/CatCar.AuthFunction.Tests.csproj tests/CatCar.AuthFunction.Tests/
@@ -15,7 +15,7 @@ COPY tests/ tests/
 RUN dotnet publish src/CatCar.AuthFunction/CatCar.AuthFunction.csproj -c Release -o /app
 
 # Stage 2: Runtime
-FROM mcr.microsoft.com/azure-functions/dotnet-isolated:4-dotnet-isolated10.0
+FROM mcr.microsoft.com/azure-functions/dotnet-isolated:4.1055.300-9-dotnet-isolated11.0-azurelinux3
 ENV AzureWebJobsScriptRoot=/home/site/wwwroot \
     AzureFunctionsJobHost__Logging__Console__IsEnabled=true
 

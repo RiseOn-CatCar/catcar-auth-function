@@ -8,6 +8,7 @@ using Npgsql;
 var builder = FunctionsApplication.CreateBuilder(args);
 
 builder.ConfigureFunctionsWebApplication();
+builder.UseMiddleware<CorrelationMiddleware>();
 builder.AddServiceDefaults();
 
 builder.Services.Configure<CustomerJwtOptions>(builder.Configuration.GetSection(CustomerJwtOptions.SectionName));

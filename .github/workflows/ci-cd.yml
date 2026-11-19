@@ -2,87 +2,38 @@ name: Auth Function CI/CD
 
 on:
   push:
-    branches: [develop, main]
+    branches: [main, 'release/**']
   pull_request:
-    branches: [develop, main]
+    branches: [main, 'release/**']
+  workflow_dispatch:
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Setup .NET SDK
-        uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '10.0.x'
-      - name: Restore dependencies
-        run: dotnet restore CatCar.AuthFunction.slnx
-      - name: Build solution
-        run: dotnet build CatCar.AuthFunction.slnx -c Release --no-restore
-      - name: Run unit tests
-        run: dotnet test CatCar.AuthFunction.slnx -c Release --no-build
+          dotnet-version: '11.0.100'
+      - name: Install .NET 10 runtime
+        run: |
+          curl -fsSL https://dot.net/v1/dotnet-install.sh -o "$RUNNER_TEMP/dotnet-install.sh"
+          bash "$RUNNER_TEMP/dotnet-install.sh" --runtime dotnet --version 10.0.15 --install-dir "$DOTNET_ROOT"
+      - run: dotnet restore CatCar.AuthFunction.slnx
+      - run: dotnet build CatCar.AuthFunction.slnx -c Release --no-restore
+      - run: dotnet test CatCar.AuthFunction.slnx -c Release --no-build
 
-  docker-build:
-    needs: build-and-test
+  validate-infra:
     runs-on: ubuntu-latest
-    if: github.event_name == 'push'
-    environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'homologation' }}
     steps:
       - uses: actions/checkout@v4
-      - name: Azure Login
-        uses: azure/login@v2
+      - uses: hashicorp/setup-terraform@v3
         with:
-          client-id: ${{ vars.AZURE_DEPLOY_CLIENT_ID || vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - name: ACR Login
-        run: az acr login --name ${{ vars.ACR_NAME }}
-      - name: Build and Push Docker Image
-        run: |
-          IMAGE="${{ vars.ACR_NAME }}.azurecr.io/catcar-auth-function"
-          TAG="${{ github.sha }}"
-          docker build -t "$IMAGE:$TAG" -t "$IMAGE:latest" .
-          docker push "$IMAGE:$TAG"
-          docker push "$IMAGE:latest"
+          terraform_version: 1.17.1
+      - run: terraform -chdir=infra fmt -check -recursive
+      - run: terraform -chdir=infra init -backend=false -input=false -lockfile=readonly
+      - run: terraform -chdir=infra validate
 
-  deploy-homologation:
-    needs: docker-build
-    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
-    runs-on: ubuntu-latest
-    environment: homologation
-    steps:
-      - name: Azure Login
-        uses: azure/login@v2
-        with:
-          client-id: ${{ vars.AZURE_DEPLOY_CLIENT_ID || vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - name: Update Azure Container App
-        run: |
-          az containerapp update \
-            --name ${{ vars.CONTAINER_APP_NAME || 'catcar-auth-function-homolog' }} \
-            --resource-group ${{ vars.RESOURCE_GROUP || vars.CATCAR_FOUNDATION_RESOURCE_GROUP || 'catcar-homolog' }} \
-            --image "${{ vars.ACR_NAME }}.azurecr.io/catcar-auth-function:${{ github.sha }}"
-
-  deploy-production:
-    needs: docker-build
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    runs-on: ubuntu-latest
-    environment: production
-    steps:
-      - name: Azure Login
-        uses: azure/login@v2
-        with:
-          client-id: ${{ vars.AZURE_DEPLOY_CLIENT_ID || vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - name: Update Azure Container App
-        run: |
-          az containerapp update \
-            --name ${{ vars.CONTAINER_APP_NAME || 'catcar-auth-function-prod' }} \
-            --resource-group ${{ vars.RESOURCE_GROUP || vars.CATCAR_FOUNDATION_RESOURCE_GROUP || 'catcar-prod' }} \
-            --image "${{ vars.ACR_NAME }}.azurecr.io/catcar-auth-function:${{ github.sha }}"
