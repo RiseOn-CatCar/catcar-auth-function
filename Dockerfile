@@ -15,8 +15,9 @@ COPY tests/ tests/
 RUN dotnet publish src/CatCar.AuthFunction/CatCar.AuthFunction.csproj -c Release -o /app
 
 # Stage 2: Runtime
-FROM mcr.microsoft.com/azure-functions/dotnet-isolated:4.1055.300-9-dotnet-isolated11.0-azurelinux3
+FROM mcr.microsoft.com/azure-functions/dotnet-isolated:4.1055.300-10-dotnet-isolated11.0-azurelinux3
 ENV AzureWebJobsScriptRoot=/home/site/wwwroot \
-    AzureFunctionsJobHost__Logging__Console__IsEnabled=true
+    AzureFunctionsJobHost__Logging__Console__IsEnabled=true \
+    AzureWebJobsDisableHomepage=true
 
 COPY --from=build /app /home/site/wwwroot

@@ -20,16 +20,25 @@ public sealed class AuthenticateCustomerFunction(
 
     [Function("AuthFunctionRoot")]
     public static HttpResponseData Root(
-        [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "")] HttpRequestData request)
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "{root?}")] HttpRequestData request)
     {
+        if (request.Url.AbsolutePath is not ("/" or "/api" or "/api/"))
+        {
+            return request.CreateResponse(HttpStatusCode.NotFound);
+        }
+
         var response = request.CreateResponse(HttpStatusCode.Redirect);
         response.Headers.Add("Location", "/api/auth/customer");
         return response;
     }
 
+    [Function("AuthFunctionApiRoot")]
+    public static HttpResponseData ApiRoot(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "api")] HttpRequestData request) => Root(request);
+
     [Function(nameof(AuthenticateCustomerFunction))]
     public async Task<HttpResponseData> Run(
-        [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", "options", Route = "auth/customer")] HttpRequestData request,
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", "options", Route = "api/auth/customer")] HttpRequestData request,
         CancellationToken cancellationToken)
     {
         // Handle CORS preflight
@@ -332,7 +341,7 @@ public sealed class AuthenticateCustomerFunction(
           <div class="container">
             <div class="header">
               <h1>🚗 CatCar Auth Serverless Function</h1>
-              <span class="badge">Azure Functions Isolated Worker (.NET 10)</span>
+              <span class="badge">Azure Functions Isolated Worker (.NET 11)</span>
             </div>
 
             <div class="card">

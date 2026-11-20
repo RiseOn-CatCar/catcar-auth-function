@@ -67,8 +67,20 @@ curl --request POST "$APIM_URL/api/auth/customer" \
 ## Local Development & Testing
 
 ### Prerequisites
-- .NET 10.0 SDK
+- .NET 11.0 SDK and Azure Functions Core Tools v4
 - Docker (optional, for container runs)
+
+The Functions host must start the isolated worker; running the executable directly
+does not provide its gRPC host endpoint. From `src/CatCar.AuthFunction`, run
+`FUNCTIONS_WORKER_RUNTIME=dotnet-isolated AzureWebJobsDisableHomepage=true func host start --port 7071`
+with the connection string and customer JWT settings configured. Both `/` and `/api` redirect to the
+interactive page at `/api/auth/customer`. The launch profile and container image
+also disable the default Functions homepage.
+
+The .NET 11 project uses `Azure.Functions.Sdk`: `Microsoft.Azure.Functions.Worker.Sdk`
+2.1.0 does not support this target. If Rider launches the worker directly instead of
+through Core Tools, start the host with the command above until its Azure Toolkit
+supports the newer SDK.
 
 ### Build & Run Tests
 ```bash

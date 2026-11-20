@@ -6,6 +6,6 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
-    <NoWarn>$(NoWarn);NU1902;CS1591;IDE0005</NoWarn>
+    <NoWarn>$(NoWarn);CS1591;IDE0005</NoWarn>
   </PropertyGroup>
 </Project>
