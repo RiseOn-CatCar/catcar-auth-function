@@ -115,6 +115,36 @@ public sealed class AuthenticateCustomerFunctionTests
         _ = customerLookup.DidNotReceive().FindByDocumentNumberAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
+    [Theory]
+    [InlineData("/")]
+    [InlineData("/api")]
+    [InlineData("/api/")]
+    public void Root_WithRootPath_RedirectsToCustomerPage(string path)
+    {
+        var context = Substitute.For<FunctionContext>();
+        var request = Substitute.For<HttpRequestData>(context);
+        request.Url.Returns(new Uri($"https://localhost{path}"));
+        request.CreateResponse().Returns(_ => new TestHttpResponseData(context));
+
+        var response = AuthenticateCustomerFunction.Root(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        response.Headers.GetValues("Location").Should().ContainSingle().Which.Should().Be("/api/auth/customer");
+    }
+
+    [Fact]
+    public void Root_WithOtherPath_ReturnsNotFound()
+    {
+        var context = Substitute.For<FunctionContext>();
+        var request = Substitute.For<HttpRequestData>(context);
+        request.Url.Returns(new Uri("https://localhost/other"));
+        request.CreateResponse().Returns(_ => new TestHttpResponseData(context));
+
+        var response = AuthenticateCustomerFunction.Root(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
     [Fact]
     public void Issue_WithSigningKeyShorterThanThirtyTwoCharacters_Throws()
     {

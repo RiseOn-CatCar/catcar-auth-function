@@ -23,7 +23,6 @@ data "terraform_remote_state" "foundation" {
     container_name       = var.foundation_state_container_name
     key                  = var.foundation_state_key
     use_azuread_auth     = true
-    use_oidc             = true
   }
 }
 
@@ -35,7 +34,6 @@ data "terraform_remote_state" "database" {
     container_name       = var.database_state_container_name
     key                  = var.database_state_key
     use_azuread_auth     = true
-    use_oidc             = true
   }
 }
 
@@ -125,8 +123,9 @@ resource "azurerm_container_app" "function" {
     }
   }
   template {
+    # Scaling to zero saves idle compute but adds a cold start to the first request.
     min_replicas = 0
-    max_replicas = 3
+    max_replicas = 2
     http_scale_rule {
       name                = "http"
       concurrent_requests = "20"
