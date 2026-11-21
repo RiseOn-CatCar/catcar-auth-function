@@ -70,7 +70,10 @@ public static class Extensions
                     )
                     // Uncomment the following line to enable gRPC instrumentation (requires the OpenTelemetry.Instrumentation.GrpcNetClient package)
                     //.AddGrpcClientInstrumentation()
-                    .AddHttpClientInstrumentation();
+                    .AddHttpClientInstrumentation(options =>
+                        options.FilterHttpRequestMessage = request =>
+                            request.RequestUri is null || !request.RequestUri.AbsolutePath.StartsWith(
+                                "/internal/v1/customers/by-document/", StringComparison.OrdinalIgnoreCase));
             });
 
         builder.AddOpenTelemetryExporters();

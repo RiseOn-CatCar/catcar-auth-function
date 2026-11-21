@@ -27,3 +27,16 @@ variable "auth_function_image" {
     error_message = "Use an ACR catcar-auth-function image pinned by a lowercase SHA-256 digest."
   }
 }
+
+variable "os_service_base_url" {
+  description = "OS service URL; must be configured before deploying the decoupled Function."
+  type        = string
+  default     = ""
+}
+
+variable "os_service_internal_api_key" {
+  description = "Shared internal API key; must match the OS service key before deployment."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
