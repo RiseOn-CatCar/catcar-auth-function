@@ -10,13 +10,13 @@ Serverless Azure Function responsible for customer authentication via CPF in the
 flowchart LR
     Client[Client / Azure APIM] -->|POST /api/auth/customer| Trigger[Azure Function HTTP Trigger<br/>.NET 10 Isolated Worker]
     Trigger --> Validate[Normalize document number<br/>CPF check-digit validation]
-    Validate --> Lookup[Least-privilege read-only lookup]
-    Lookup --> Customers[(PostgreSQL<br/>service_operations.customers)]
+    Validate --> Lookup[Internal customer lookup]
+    Lookup --> Customers[OS Service internal API]
     Lookup -->|Active customer| Issuer[HMAC-SHA256 JWT Token Issuer]
     Issuer -->|Customer JWT: sub, customer_id, role| Client
 ```
 
-The Function only authenticates active customer records. It normalizes the submitted CPF, rejects an invalid check digit before querying the database, uses the dedicated read-only connection for `service_operations.customers`, and issues a short-lived CatCar API JWT only after a successful lookup.
+The Function normalizes and validates the CPF/CNPJ before calling the OS Service internal customer lookup. It issues a short-lived JWT only when the returned customer is active. The Function does not connect to the OS database.
 
 ---
 
@@ -73,7 +73,7 @@ curl --request POST "$APIM_URL/api/auth/customer" \
 The Functions host must start the isolated worker; running the executable directly
 does not provide its gRPC host endpoint. From `src/CatCar.AuthFunction`, run
 `FUNCTIONS_WORKER_RUNTIME=dotnet-isolated AzureWebJobsDisableHomepage=true func host start --port 7071`
-with the connection string and customer JWT settings configured. Both `/` and `/api` redirect to the
+with `OsService__BaseUrl`, `OsService__InternalApiKey` (matching the OS Service `InternalApi__Key`), and customer JWT settings configured. Both `/` and `/api` redirect to the
 interactive page at `/api/auth/customer`. The launch profile and container image
 also disable the default Functions homepage.
 
@@ -99,5 +99,7 @@ dotnet test CatCar.AuthFunction.slnx -c Release
 - The single Azure release deploys a Function image pinned by its SHA-256 digest. Terraform requires `<foundation-acr>.azurecr.io/catcar-auth-function@sha256:<64 lowercase hex>` and owns the Container App; foundation owns its internal environment and database owns Key Vault.
 
 Configure the Azure OIDC identifiers and shared Terraform backend coordinates. The foundation and database states must already exist, and deployed resources and state ownership must be verified before the first apply. The Function Container App name comes from the foundation state. Its default storage name is `stcatauth<suffix>`, where the suffix is the first eight hex characters of SHA-256 over `<subscription-id>:catcar` (for example, `3c4128ef`). Set `storage_account_name` to adopt an existing account, import it into its existing Terraform resource address, and review the plan before applying. Review other naming changes for replacements as well. State and Terraform plans can contain sensitive data and must not be published.
+
+Before the next Azure release tag, reconcile the deployment: configure the OS service URL and shared internal API key, and remove the deprecated Function database settings as part of the Azure release migration. The empty Terraform defaults are not valid runtime settings.
 
 The Function preserves a valid `X-Correlation-Id` GUID, or generates one when absent or invalid, and echoes it in the response. It does not log document numbers or bearer tokens.

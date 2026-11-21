@@ -103,10 +103,15 @@ resource "azurerm_container_app" "function" {
     server   = local.foundation.acr_login_server
     identity = azurerm_user_assigned_identity.function.id
   }
+  # Deprecated: no longer read by the function code; remove together with the Azure release migration.
   secret {
     name                = "database-connection"
     key_vault_secret_id = local.database.postgres_auth_readonly_secret_id
     identity            = azurerm_user_assigned_identity.function.id
+  }
+  secret {
+    name  = "os-service-internal-api-key"
+    value = var.os_service_internal_api_key
   }
   secret {
     name                = "customer-jwt-key"
@@ -178,6 +183,15 @@ resource "azurerm_container_app" "function" {
       env {
         name        = "ConnectionStrings__catcar-auth"
         secret_name = "database-connection"
+      }
+      # These must be set before deploying the decoupled Function.
+      env {
+        name  = "OsService__BaseUrl"
+        value = var.os_service_base_url
+      }
+      env {
+        name        = "OsService__InternalApiKey"
+        secret_name = "os-service-internal-api-key"
       }
       env {
         name        = "CustomerJwt__SigningKey"

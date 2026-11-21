@@ -35,6 +35,21 @@ public sealed class AuthenticateCustomerFunctionTests
     }
 
     [Fact]
+    public async Task Run_LookupFails_ReturnsGenericServerProblem()
+    {
+        var customerLookup = Substitute.For<ICustomerLookupService>();
+        customerLookup.FindByDocumentNumberAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns<Task<CustomerLookupResult?>>(_ => throw new HttpRequestException("sensitive upstream detail"));
+        var function = CreateFunction(customerLookup);
+
+        var response = await function.Run(CreatePostRequest($"{{\"documentNumber\":\"{ValidCpf}\"}}"), CancellationToken.None);
+        var problem = await ReadBodyAsync<ProblemDetailsResponse>(response);
+
+        response.StatusCode.Should().Be(HttpStatusCode.InternalServerError);
+        problem.Detail.Should().NotContain("sensitive upstream detail");
+    }
+
+    [Fact]
     public async Task Run_WithUnknownCustomer_ReturnsNotFoundProblem()
     {
         var customerLookup = Substitute.For<ICustomerLookupService>();

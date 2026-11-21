@@ -89,7 +89,17 @@ public sealed class AuthenticateCustomerFunction(
         string documentNumber,
         CancellationToken cancellationToken)
     {
-        var customer = await customerLookupService.FindByDocumentNumberAsync(documentNumber, cancellationToken).ConfigureAwait(false);
+        CustomerLookupResult? customer;
+        try
+        {
+            customer = await customerLookupService.FindByDocumentNumberAsync(documentNumber, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            return await CreateProblemResponseAsync(
+                request, HttpStatusCode.InternalServerError, "Authentication unavailable",
+                "Customer authentication is temporarily unavailable.", cancellationToken).ConfigureAwait(false);
+        }
         if (customer is null)
         {
             return await CreateProblemResponseAsync(

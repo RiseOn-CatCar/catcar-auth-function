@@ -1,32 +1,31 @@
 namespace CatCar.AuthFunction;
 
-using Npgsql;
+using System.Net;
+using System.Net.Http.Json;
 
 public interface ICustomerLookupService
 {
     Task<CustomerLookupResult?> FindByDocumentNumberAsync(string documentNumber, CancellationToken cancellationToken);
 }
 
-public sealed class CustomerLookupService(NpgsqlDataSource dataSource) : ICustomerLookupService
-{
-    private const string FindCustomerByDocumentQuery = """
-        SELECT id, is_active
-        FROM service_operations.customers
-        WHERE document_number = @documentNumber
-        LIMIT 1;
-        """;
 
+public sealed class CustomerLookupService(HttpClient client) : ICustomerLookupService
+{
     public async Task<CustomerLookupResult?> FindByDocumentNumberAsync(
         string documentNumber,
         CancellationToken cancellationToken)
     {
-        using var command = dataSource.CreateCommand(FindCustomerByDocumentQuery);
-        command.Parameters.AddWithValue("documentNumber", documentNumber);
+        using var response = await client.GetAsync(
+            $"/internal/v1/customers/by-document/{Uri.EscapeDataString(documentNumber)}",
+            cancellationToken).ConfigureAwait(false);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return null;
+        }
 
-        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
-            ? new CustomerLookupResult(reader.GetGuid(0), reader.GetBoolean(1))
-            : null;
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<CustomerLookupResult>(cancellationToken)
+            .ConfigureAwait(false) ?? throw new InvalidOperationException("Customer lookup returned an empty response.");
     }
 }
 
